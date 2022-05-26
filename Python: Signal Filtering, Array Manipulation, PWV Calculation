@@ -1,0 +1,270 @@
+# Receives data sent wirelessly by ESP32 microcontroller connected to MAXREFDES117 Sensors
+# Filters data and processes data --> calculate PWV
+# sends PWV value back to Arduino IDE
+
+import matplotlib.pyplot as plt
+import scipy.signal
+from scipy.signal import find_peaks
+import socket
+
+sock = socket.socket()
+host = "192.168.68.136" # IP as seen on Arduino for port
+
+# 34:94:54:39:17:AE is ESP32test_15
+# 34:94:54:39:19:E6 is ESP32test with smoky microcontroller :O
+
+port = 69 # CHANGE!
+MAX_dta = 8000 # at 100/s ---- 8000 for 20s reading --> 24000 for 60s reading
+buf_size = 4096
+sock.connect((host, port))
+#def rx_and_echo():
+    #sock.send("\nsend anything\n")
+datapoints = 0
+DATA = []
+DATA_raw_actual = []
+DATA_raw_trimmed = []
+sensor_tip = []
+time_tip = []
+sensor_finger = []
+time_finger = []
+time_tip_zeroed = []
+time_finger_zeroed = []
+s_t = 0  # 0, 4, 8, 12 etc.
+t_t = 1  # 1, 5, 9, 13 etc.
+s_f = 2  # 2, 6, 10, 14 etc.
+t_f = 3  # 3, 7 , 11, 15, etc.
+
+# ------------------------------------------------------
+# Here: Function for BUTTERWORTH BANDPASS FILTER
+def bandPassFilter(signal,lowcut, highcut, order, type, samplingF):
+# fs = 50 # 50 Hz based on "sampleRate = 400" in arduino code
+
+    b, a = scipy.signal.butter(order, [lowcut, highcut], type, analog=False, fs=samplingF)
+    y = scipy.signal.filtfilt(b, a, signal)
+
+    return(y)
+# ------------------------------------------------------
+# Here: Function for BUTTERWORTH HIGHPASS FILTER
+# Recall: sens0_filtered2 = bandPassFilter(sens0_filtered1, 0.05, 3, 'hp')
+def lowPassFilter(signal, cutoff, order, type, samplingF):
+    # fs = 50 # 50 Hz based on "sampleRate = 400" in arduino code
+    # nyq = 0.5*fs
+    # ctf = cutoff/nyq
+    d, c = scipy.signal.butter(order, cutoff, type, analog=False, fs=samplingF)
+    y = scipy.signal.filtfilt(d, c, signal)
+
+    return(y)
+# --------------------------------------------------------
+# Here: Function for Averaging
+def average(lst):
+    return sum(lst) / len(lst)
+# --------------------------------------------------------
+# Here: Function for calculating PWV = sensor distance / average time difference between peaks
+def pwv(distance, delta_t):  # distance in meters typically (metrics)
+    return distance / (delta_t * 0.001)  # converts ms --> s
+# --------------------------------------------------------
+def full_send(data):
+    while True:
+        if len(data) == 0: break
+        sock.send(data)
+# ----------------------
+while datapoints < MAX_dta:
+    data = sock.recv(buf_size)  # Socket for data transmission, recv() function for receiving data from socket
+    if data:
+            pkt_O = data.decode('utf-8').rstrip('\n')  # Converts byte data received from microcontroller --> string + strips any formatting discrepancies via \n, \r
+            pkt = pkt_O.rstrip('\r')
+            pktSPLIT = pkt.split(',')  # Seperates the data that was sent over (sensor reading 0, associated timestamp 0, sensor reading 1, associated timestamp 1) into separate entries by "," delimiter
+            pktSPLIT_filtered_str = list(filter(None, pktSPLIT))  # Creates an array element containing the above separated elements
+            temp_num_pts = len(pktSPLIT_filtered_str)
+            DATA.append(pktSPLIT_filtered_str)  # adds above array element to a greater array
+
+            datapoints += temp_num_pts
+
+
+sock.close()
+
+# filter array, do the stuff like before.
+for i in range(0, len(DATA)):
+    for j in range(0, len(DATA[i])):
+        DATA_raw_actual.append(int(DATA[i][j])) # takes string element within list of lists and converts to int!
+
+print('untrimmed raw int dataset')
+print(DATA_raw_actual)
+print(type(DATA_raw_actual[1]))
+print('current length of untrimmed int list: ')
+print(len(DATA_raw_actual)) # usually greater than the max data point set...
+
+DATA_raw_trimmed = DATA_raw_actual[0:MAX_dta]
+print(DATA_raw_trimmed)
+print('trimmed length of int list: ')
+print(len(DATA_raw_trimmed))  # Now data set is trimmed to the number of our liking
+
+# next step: isolate values by sensor / time.
+for k in range(0, len(DATA_raw_trimmed)):
+    if k == s_t:
+        sensor_tip.append(DATA_raw_trimmed[k])  # aka generic sensor reading at location #1
+        s_t += 4
+    elif k == t_t:
+        time_tip.append(DATA_raw_trimmed[k])
+        t_t += 4
+    elif k == s_f:
+        sensor_finger.append(DATA_raw_trimmed[k])  # aka generic sensor reading at location #2
+        s_f += 4
+    elif k == t_f:
+        time_finger.append(DATA_raw_trimmed[k])
+        t_f += 4
+
+print('Sensor Bottom readings:')  # Finger Tip
+print(sensor_tip)
+print('RAW Time Bottom stamps:')  # Finger Tip
+print(time_tip)
+print('Sensor Top readings:') # Finger
+print(sensor_finger)
+print('RAW Time Top stamps:') # Finger
+print(time_finger)
+
+# Zeroes the timestamps, as ESP32 microcontroller continues running and timestamp continuously continue to increase
+for OJ in range(0,len(time_tip)):
+    time_tip_zeroed.append(time_tip[OJ] - time_tip[0])
+    time_finger_zeroed.append(time_finger[OJ] - time_finger[0])
+
+print('Zeroed Time (finger tip) stamps:')
+print(time_tip_zeroed)
+
+print('Zeroed Time (finger) stamps:')
+print(time_finger_zeroed)
+
+
+raw_sensor_plots = plt.plot(time_tip_zeroed, sensor_tip, 'r-', time_finger_zeroed, sensor_finger, 'b-')
+plt.title("Raw PPG Waves")
+plt.xlabel("Timestamp (ms)")
+plt.ylabel("Reflectance Readings (a.u.)")
+plt.legend(raw_sensor_plots[:2], ['Bottom', 'Top'])
+plt.show()
+
+# --------------------------------------
+# CHECK HOW CONSISTENT TIMESTAMPS ARE HERE (as in, if there is any time lag)
+counttt = [i for i in (range(2000))]  # range(X), where X = MAX_dta / 4
+plt.plot(counttt, time_tip_zeroed)
+plt.plot(counttt, time_finger_zeroed)
+plt.legend(raw_sensor_plots[:2], ['Finger Tip', 'Finger'])
+plt.title("Timestamp Check")
+plt.xlabel("index")
+plt.ylabel("Timestamp")
+plt.show()
+# result: it (should) look alright
+# --------------------------------------
+
+# Next Step: FILTERING #1---MY SETTINGS = (0.5. 2.625, 3, 'bandpass, 100)
+sensor_tip_filtered = bandPassFilter(sensor_tip, 0.5, 2.625, 2, 'bandpass', 100)
+sensor_finger_filtered = bandPassFilter(sensor_finger, 0.5, 2.625, 2, 'bandpass', 100)
+plt.plot(time_tip_zeroed, sensor_tip_filtered, 'r-', time_finger_zeroed, sensor_finger_filtered, 'b-')
+plt.title("Filteredx1 PPG Readings")
+plt.xlabel("Timestamp (ms)")
+plt.ylabel("Filtered x 1: Reflectance Readings (a.u.)")
+plt.show()
+
+# FILTERING #2: MY SETTINGS = (0.4, 2, 'hp', 100)
+sensor_tip_filtered2 = lowPassFilter(sensor_tip_filtered, 2.5, 2, 'lp', 100)
+sensor_finger_filtered2 = lowPassFilter(sensor_finger_filtered, 2.5, 2, 'lp', 100)
+plt.plot(time_tip_zeroed, sensor_tip_filtered2, 'r-', time_finger_zeroed, sensor_finger_filtered2, 'b-')
+plt.title("Filtered PPG Waves")
+plt.xlabel("Timestamp (ms)")
+plt.ylabel("Filtered PPG Readings (a.u.)")
+plt.show()
+# ------------------------------------------------------
+# NOW: FIND PEAKS + ASSOCIATED TIMESTAMPS
+peaks_tip = find_peaks(sensor_tip_filtered2)
+peaks_finger = find_peaks(sensor_finger_filtered2)
+pos_tip = peaks_tip[0]
+pos_finger = peaks_finger[0]
+
+print('Indexes of all peaks from finger tip readings:')
+print(pos_tip)
+print('Indexes of all peaks from finger readings:')
+print(pos_finger)
+
+L_peaks_tip = len(pos_tip)
+print('Total number of peak indexes from finger tip readings: ')
+print(L_peaks_tip)
+L_peaks_finger = len(pos_finger)
+print('Total number of peak indexes from finger readings: ')
+print(L_peaks_finger)
+
+time_peaks_tip =[]
+time_peaks_finger = []
+a = 0
+h = 0
+while a < L_peaks_tip:
+    temp_time_peaks_tip = pos_tip[a]
+    time_peaks_tip.append(time_tip[temp_time_peaks_tip])
+    a += 1
+print('Timestamps to each corresponding peak index from finger tip readings:')
+print(time_peaks_tip)
+
+while h < L_peaks_finger:
+    temp_time_peaks_finger = pos_finger[h]
+    time_peaks_finger.append(time_finger[temp_time_peaks_finger])
+    h += 1
+print('Timestamps to each corresponding peak index from finger readings:')
+print(time_peaks_finger)
+# ----------------------------------------------------------
+# NEXT: COMPARE PEAK INDEXES --> ALIGNED PEAK INDEXES
+pos_tip_final = []
+pos_finger_final = []
+peaks_needed = 10
+c = 0
+
+for i in range(1, len(pos_finger)):
+    for j in range(1, len(pos_tip)):
+        if (pos_finger[i] == pos_tip[j]) or (abs(pos_finger[i] - pos_tip[j]) < 20):
+# if the magnitude difference in the index values of the difference between sensors is LESS THAN 10 (10 is sort of arbitrary here)
+            pos_finger_final.append(pos_finger[i])
+            pos_tip_final.append(pos_tip[j])
+
+print('Aligned peak index values from finger tip readings:')
+print(pos_tip_final)
+print('Aligned peak index values from finger readings:')
+print(pos_finger_final)
+
+
+
+time_peaks_tip_final = []
+time_peaks_finger_final = []
+for k in range(1, len(pos_tip_final) - 1):
+    time_peaks_tip_final.append(time_tip[pos_tip_final[k]])
+    time_peaks_finger_final.append(time_finger[pos_finger_final[k]])
+
+print('Corresponding Timestamps for x peak indexes from finger tip readings: [ms]')
+print(time_peaks_tip_final)
+print('Corresponding Timestamps for x peak indexes from finger readings:[ms]')
+print(time_peaks_finger_final)
+# ------------------------------------
+# THEN, CALCULATE THE TIME DIFFERENCES BETWEEN ALIGNED TIME STAMPS
+
+time_difference = []
+for j in range(len(time_peaks_tip_final)):
+# dif = abs(t0_final[j] - t1_final[j])
+    dif = abs(time_peaks_finger_final[j] - time_peaks_tip_final[j])
+    time_difference.append(dif)
+
+print('differences in corresponding timestamps of sensors 0/1:')
+print(time_difference)
+
+print('average time difference between timestamps: [s]')
+avg_delta_t = average(time_difference)
+print(avg_delta_t)
+# -------------------------------------------------
+# FINALLY, CALCULATE PWV!!!
+PWV = pwv(0.035, avg_delta_t)  # 0.056 for finger sensors, 0.035 for headband
+print('Calculated PWV value in [m/s]:')
+print(PWV)
+# ----------------------------
+# Extras (sending data back to arduino)
+
+round_avg_PWV = round(PWV, 3)
+str_avg_PWV = str(round_avg_PWV)
+b_avg_PWV = str_avg_PWV.encode()  # encodes string back into byte form to be compatible w Arduino IDE
+print(b_avg_PWV)
+print(len(b_avg_PWV))
+full_send(b_avg_PWV)
