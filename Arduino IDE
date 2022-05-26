@@ -1,0 +1,103 @@
+// This program allows you to connect the ESP32 (Sparkfun Thing Plus in this case) to wifi to wirelessly transmit sensor readings to Python
+// In addition, this program features ArduinoOTA, which allows for remote, over-the-air programming via wifi.
+// Sensors used: 2 x MAX30101, although can be substituted with MAX30102, MAX30105, or Maxim Integrated MAXREFDES117
+// Multiplexor TCA9548A was used to integrate signals from both sensors 
+
+#include <ArduinoOTA.h>
+#include "WiFi.h"
+
+#include <Wire.h>
+#include "MAX30105.h"
+#include "SparkFun_I2C_Mux_Arduino_Library.h"
+
+MAX30105 particleSensor;
+QWIICMUX myMux;
+unsigned long myTime0;
+unsigned long myTime1;
+int i = 0;
+#define NUMBER_OF_SENSORS 8
+WiFiServer wifiServer(69);
+
+void setup()
+{
+  Serial.begin(115200);
+  Serial.println();
+  Serial.println("Qwiic Mux Shield Read Example");
+
+  Wire.begin();
+
+  if (myMux.begin() == false)
+  {
+    Serial.println("Mux not detected. Freezing...");
+    while (1)
+      ;
+  }
+  
+  Serial.println("Mux detected");
+      for (byte x = 0 ; x < NUMBER_OF_SENSORS ; x++)
+      {
+  myMux.enablePort(x); //Connect master to port labeled 'x' on the mux
+  byte currentPortNumber = myMux.getPort();
+  Serial.print("CurrentPort: ");
+  Serial.println(currentPortNumber);
+  
+  // setting up sensors connected to a given port
+  particleSensor.begin(Wire, I2C_SPEED_FAST);
+  byte ledBrightness = 69; //Options: 0=Off to 255=50mA 
+  // Original ledBrightness settings for finger: 32 RED / 30 IR
+  // Experimental settings for forehead: 5 RED (minimize) / 50 IR 
+  byte sampleAverage = 4; //Options: 1, 2, 4, 8, 16, 32
+  byte ledMode = 2; //Options: 1 = Red only, 2 = Red + IR, 3 = Red + IR + Green
+  int sampleRate = 1600; //Options: 50, 100, 200, 400, 800, 1000, 1600, 3200
+  int pulseWidth = 411; //Options: 69, 118, 215, 411
+  int adcRange = 8192; //Options: 2048, 4096, 8192, 16384
+  particleSensor.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
+  particleSensor.setPulseAmplitudeRed(0);
+  myMux.disablePort(x);
+  // go for 100/second---sample rate 3200 x sample average 1 or sample rate 1600 x sample average 2/4 work great without generating significant time lag
+ 
+}
+ 
+ // Setting up wifi server, Arduino OTA
+ WiFi.mode(WIFI_STA); 
+ WiFi.begin("Network has red nose confirmed", "wacky85bed5267draw"); // Format: "Wifi Name", "Password"
+ wifiServer.begin();
+ ArduinoOTA.setHostname("esp_test_15"); // Label for identification
+ ArduinoOTA.begin();
+
+}
+
+void loop()
+{
+  ArduinoOTA.handle(); 
+
+  // sends data over wifi to Python
+  WiFiClient client = wifiServer.available(); 
+  if (client) {
+    while (client.connected()) {
+
+      // FINGER TIP/LOWER FOREHEAD (IR for both then)
+      myMux.enablePort(7);
+      long RValue0 = particleSensor.getIR();
+           myTime0 = millis();
+      myMux.disablePort(7);
+
+      // FINGER/UPPER FOREHEAD
+      myMux.enablePort(4);
+      long IRValue1 = particleSensor.getIR();
+           myTime1 = millis();    
+      myMux.disablePort(4);
+  
+      client.print(RValue0);
+      client.print(',');
+      client.print(myTime0);
+      client.print(',');         
+      client.print(IRValue1);
+      client.print(',');
+      client.print(myTime1);
+      client.print(',');
+  
+      
+    }
+  }
+}
