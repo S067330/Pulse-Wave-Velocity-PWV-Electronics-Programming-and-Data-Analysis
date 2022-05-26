@@ -88,6 +88,7 @@ void loop()
            myTime1 = millis();    
       myMux.disablePort(4);
   
+      // sends data (sensor reading 0, associated timestamp 0, sensor reading 1, associated timestamp 1) to python
       client.print(RValue0);
       client.print(',');
       client.print(myTime0);
